@@ -352,8 +352,15 @@ def main():
     app.add_handler(CommandHandler("history", history))
     app.add_handler(CallbackQueryHandler(button_handler))
 
-    print("🤖 Supreme Exchange Bot Running")
-    app.run_polling()
+    
+print("🤖 Supreme Exchange Bot Running")
+
+while True:
+    try:
+        app.run_polling()
+    except Exception as e:
+        print(f"Error: {e}")
+        time.sleep(5)
 
 if __name__ == "__main__":
     main()
