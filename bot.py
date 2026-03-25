@@ -1,3 +1,5 @@
+import asyncio
+import time
 import sqlite3
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
