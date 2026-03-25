@@ -365,9 +365,9 @@ def main():
     app.add_handler(CommandHandler("maintenance", maintenance))
     app.add_handler(CommandHandler("transactions", transactions))
     app.add_handler(CommandHandler("history", history))
-    app.add_handler(CallbackQueryHandler(button_handler)
+    app.add_handler(CallbackQueryHandler(button_handler))
                     
-            print("🤖 Supreme Exchange Bot Running")
+    print("🤖 Supreme Exchange Bot Running")
 
     app.run_polling(drop_pending_updates=True)
 
