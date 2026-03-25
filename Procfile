@@ -1,1 +1,1 @@
-worker: python supreme.py
+worker: python bot.py
