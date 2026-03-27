@@ -22,7 +22,7 @@ from telegram.ext import (
 
 # === CONFIG ===
 BOT_TOKEN = "8229373861:AAGNNK9C_UF6rwbePcNDktz2VYJnqS1rua8"
-ADMIN_ID = 619893872
+ADMIN_ID = 8615263183
 
 # === DB Setup ===
 conn = sqlite3.connect("exchange.db", check_same_thread=False)
