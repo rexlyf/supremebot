@@ -309,7 +309,7 @@ async def button_handler(update: Update, context: CallbackContext):
 
         cur.execute("SELECT user_id, tx_hash FROM transactions WHERE id=?", (tx_id,))
         uid, tx_hash = cur.fetchone()
-        await context.bot.send_message(uid, f"❌ Your transaction {tx_hash} has been rejected.")
+        await context.bot.send_message(uid, f"❌ Your transaction {tx_hash} has been rejected, Please Re-check your transaction hash ID you entered.\n If everything is valid then please resubmit everything this time don't pay anything and just paste your OLD hash id.\n If not working then contact Customer Care @supremehelpline")
 
 # Admin view pending transactions
 async def transactions(update: Update, context: CallbackContext):
