@@ -1,91 +1,51 @@
 import asyncio
 from flask import Flask
 import threading
-
-app_web = Flask(__name__)
-
-@app_web.route('/')
-def home():
-    return "Bot is running"
-
-def run_web():
-    app_web.run(host='0.0.0.0', port=8080)
-
-threading.Thread(target=run_web).start()
-import time
 import sqlite3
+import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, CallbackQueryHandler,
     filters, CallbackContext, ConversationHandler
 )
 
+# === LOGGING (Errors check karne ke liye) ===
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+
+# === WEB SERVER (For 24/7 Hosting) ===
+app_web = Flask(__name__)
+@app_web.route('/')
+def home(): return "Supreme Exchange Bot is Running!"
+def run_web(): app_web.run(host='0.0.0.0', port=8080)
+threading.Thread(target=run_web, daemon=True).start()
+
 # === CONFIG ===
 BOT_TOKEN = "8229373861:AAGNNK9C_UF6rwbePcNDktz2VYJnqS1rua8"
 ADMIN_ID = 8615263183
 
-# === DB Setup ===
+# === DATABASE SETUP ===
 conn = sqlite3.connect("exchange.db", check_same_thread=False)
 cur = conn.cursor()
-
-# Users table
-cur.execute('''CREATE TABLE IF NOT EXISTS users (
-    user_id INTEGER PRIMARY KEY,
-    bank_account TEXT,
-    ifsc TEXT,
-    name TEXT
-)''')
-
-# Transactions table
-cur.execute('''CREATE TABLE IF NOT EXISTS transactions (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER,
-    coin TEXT,
-    amount REAL,
-    inr_value REAL,
-    tx_hash TEXT UNIQUE,
-    status TEXT
-)''')
-
-# Coins table
-cur.execute('''CREATE TABLE IF NOT EXISTS coins (
-    symbol TEXT PRIMARY KEY,
-    price REAL,
-    address TEXT
-)''')
-
-# Settings table
-cur.execute('''CREATE TABLE IF NOT EXISTS settings (
-    key TEXT PRIMARY KEY,
-    value TEXT
-)''')
+cur.execute('CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, bank_account TEXT, ifsc TEXT, name TEXT)')
+cur.execute('CREATE TABLE IF NOT EXISTS transactions (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, coin TEXT, amount REAL, inr_value REAL, screenshot_id TEXT, status TEXT, bank_info TEXT)')
+cur.execute('CREATE TABLE IF NOT EXISTS coins (symbol TEXT PRIMARY KEY, price REAL, address TEXT)')
+cur.execute('CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)')
 conn.commit()
 
-# === States ===
-AMOUNT, COIN_SELECT, HASH, BANK_ACC, BANK_IFSC, BANK_NAME = range(6)
+# === STATES ===
+AMOUNT, COIN_SELECT, CONFIRM_SENT, SCREENSHOT, BANK_CHOICE, BANK_ACC, BANK_IFSC, BANK_NAME = range(8)
 
-# === Helper functions ===
-def maintenance_mode():
-    cur.execute("SELECT value FROM settings WHERE key='maintenance'")
-    row = cur.fetchone()
-    return row and row[0] == "on"
-
+# === HELPER FUNCTIONS ===
 def get_global_price():
     cur.execute("SELECT value FROM settings WHERE key='global_price'")
     row = cur.fetchone()
     return float(row[0]) if row else None
 
-# === User Flow ===
+# === USER FLOW ===
 async def start(update: Update, context: CallbackContext):
-    await update.message.reply_text(
-        "👋 Welcome to Supreme Exchange!\n\n"
-        "To sell your crypto, use /sell"
-    )
+    await update.message.reply_text("👋 Welcome to Supreme Exchange!\n\nTo sell your crypto, use /sell")
 
 async def sell(update: Update, context: CallbackContext):
-    if maintenance_mode():
-        await update.message.reply_text("⚠️ The bot is under maintenance. Please try later.")
-        return ConversationHandler.END
     await update.message.reply_text("💰 Enter the amount you want to sell:")
     return AMOUNT
 
@@ -93,20 +53,16 @@ async def handle_amount(update: Update, context: CallbackContext):
     try:
         amount = float(update.message.text)
         context.user_data['amount'] = amount
-
-        # Fetch available coins
         cur.execute("SELECT symbol FROM coins")
         coins = cur.fetchall()
         if not coins:
-            await update.message.reply_text("⚠️ No coins available. Please try later.")
+            await update.message.reply_text("⚠️ No coins available. Contact Admin.")
             return ConversationHandler.END
-
         keyboard = [[InlineKeyboardButton(c[0], callback_data=c[0])] for c in coins]
-        await update.message.reply_text("📌 Select the coin you want to sell:", 
-                                        reply_markup=InlineKeyboardMarkup(keyboard))
+        await update.message.reply_text("📌 Select the coin you want to sell:", reply_markup=InlineKeyboardMarkup(keyboard))
         return COIN_SELECT
     except:
-        await update.message.reply_text("❌ Invalid amount, try again:")
+        await update.message.reply_text("❌ Invalid amount, please enter a number:")
         return AMOUNT
 
 async def select_coin(update: Update, context: CallbackContext):
@@ -114,265 +70,159 @@ async def select_coin(update: Update, context: CallbackContext):
     await query.answer()
     coin = query.data
     context.user_data['coin'] = coin
-
-    # Get price and address
+    
     cur.execute("SELECT price, address FROM coins WHERE symbol=?", (coin,))
     row = cur.fetchone()
-    if not row:
-        await query.message.reply_text("⚠️ Coin not found. Please try /sell again.")
-        return ConversationHandler.END
-
     price, address = row
-    global_price = get_global_price()
-    if global_price:
-        price = global_price  # override with global price if set
+    
+    g_price = get_global_price()
+    if g_price: price = g_price
 
-    context.user_data['address'] = address
     inr_value = round(context.user_data['amount'] * price, 2)
     context.user_data['inr_value'] = inr_value
+    context.user_data['address'] = address
 
     msg = (
-        f"💵 You are selling {context.user_data['amount']} {coin}\n"
-        f"Rate: {price} INR\n"
-        f"You will receive: {inr_value} INR\n\n"
-        f"📥 Send your {coin} to this address:\n{address}\n\n"
-        "Tap the button below to copy the address:\n\n"
-        "After sending Enter your Transaction hash ID and sumbit"
+        f"💵 *Order Summary*\n"
+        f"Selling: {context.user_data['amount']} {coin}\n"
+        f"You Receive: ₹{inr_value}\n\n"
+        f"📥 *Address (Tap to copy):*\n<code>{address}</code>\n\n"
+        f"✅ Please send the exact amount to the address.\n\n"
+        f"⚠️ Note: Be aware you should ensure that the amount shown after fee deduction is sent, "
+        f"otherwise you may face transaction problems or receive less amount.\n\n"
+        f"After sending click the button below"
     )
+    keyboard = [[InlineKeyboardButton(f"✅ I have sent the {coin}", callback_data="payment_done")]]
+    await query.message.edit_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
+    return CONFIRM_SENT
 
-    keyboard = [[InlineKeyboardButton("📋 Copy Address", switch_inline_query_current_chat=address)]]
+async def ask_screenshot(update: Update, context: CallbackContext):
+    query = update.callback_query
+    await query.answer()
+    await query.message.reply_text("✨ Please send the **Payment Screenshot** as proof.\n\n🤖 Use the image for reference!!")
+    return SCREENSHOT
 
-    await query.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(keyboard))
+async def handle_screenshot(update: Update, context: CallbackContext):
+    if not update.message.photo:
+        await update.message.reply_text("❌ Please send a photo (screenshot).")
+        return SCREENSHOT
 
-    return HASH
-
-async def handle_hash(update: Update, context: CallbackContext):
-    tx_hash = update.message.text.strip()
+    context.user_data['screenshot_id'] = update.message.photo[-1].file_id
     user_id = update.message.from_user.id
-    context.user_data['tx_hash'] = tx_hash
 
-    # Check if user has bank details
     cur.execute("SELECT bank_account, ifsc, name FROM users WHERE user_id=?", (user_id,))
     bank = cur.fetchone()
+
     if bank:
-        context.user_data['bank'] = bank
-        return await save_transaction(update, context)
+        last_4 = bank[0][-4:]
+        keyboard = [
+            [InlineKeyboardButton(f"🏦 Use Saved Bank (****{last_4})", callback_data="use_old")],
+            [InlineKeyboardButton("➕ Add New Bank Account", callback_data="use_new")]
+        ]
+        await update.message.reply_text("Aapka purana bank account mila hai. Kaunsa use karna hai?", 
+                                        reply_markup=InlineKeyboardMarkup(keyboard))
+        return BANK_CHOICE
     else:
-        await update.message.reply_text("🏦 Enter your bank account number:")
+        await update.message.reply_text("🏦 Payment ke liye bank details enter karein.\n\nEnter Bank Account Number:")
+        return BANK_ACC
+
+async def bank_choice_handler(update: Update, context: CallbackContext):
+    query = update.callback_query
+    await query.answer()
+    if query.data == "use_old":
+        cur.execute("SELECT bank_account, ifsc, name FROM users WHERE user_id=?", (query.from_user.id,))
+        bank = cur.fetchone()
+        context.user_data['final_bank'] = f"Bank: {bank[0]}\nIFSC: {bank[1]}\nName: {bank[2]}"
+        return await save_transaction(query, context)
+    else:
+        await query.message.reply_text("🏦 Enter NEW bank account number:")
         return BANK_ACC
 
 async def bank_account(update: Update, context: CallbackContext):
-    context.user_data['bank_account'] = update.message.text.strip()
-    await update.message.reply_text("Enter your IFSC code:")
+    context.user_data['t_acc'] = update.message.text.strip()
+    await update.message.reply_text("Enter IFSC code:")
     return BANK_IFSC
 
 async def bank_ifsc(update: Update, context: CallbackContext):
-    context.user_data['ifsc'] = update.message.text.strip()
-    await update.message.reply_text("Enter account holder name:")
+    context.user_data['t_ifsc'] = update.message.text.strip()
+    await update.message.reply_text("Enter Account Holder Name:")
     return BANK_NAME
 
 async def bank_name(update: Update, context: CallbackContext):
-    user_id = update.message.from_user.id
     name = update.message.text.strip()
-
-    cur.execute("INSERT OR REPLACE INTO users (user_id, bank_account, ifsc, name) VALUES (?,?,?,?)",
-                (user_id, context.user_data['bank_account'], context.user_data['ifsc'], name))
+    user_id = update.message.from_user.id
+    acc, ifsc = context.user_data['t_acc'], context.user_data['t_ifsc']
+    
+    cur.execute("INSERT OR REPLACE INTO users (user_id, bank_account, ifsc, name) VALUES (?,?,?,?)", (user_id, acc, ifsc, name))
     conn.commit()
-    context.user_data['bank'] = (context.user_data['bank_account'], context.user_data['ifsc'], name)
-
+    
+    context.user_data['final_bank'] = f"Bank: {acc}\nIFSC: {ifsc}\nName: {name}"
     return await save_transaction(update, context)
 
-async def save_transaction(update: Update, context: CallbackContext) -> int:
-    user_id = update.message.from_user.id
-    tx_hash = context.user_data.get("tx_hash")   # ✅ FIXED
+async def save_transaction(update_or_query, context: CallbackContext):
+    user = update_or_query.from_user
+    is_q = hasattr(update_or_query, 'data')
+    
+    s_id = context.user_data.get('screenshot_id')
+    coin = context.user_data.get('coin')
+    amount = context.user_data.get('amount')
+    val = context.user_data.get('inr_value')
+    bank = context.user_data.get('final_bank')
 
-    # Get stored transaction data
-    coin = context.user_data.get("coin")
-    amount = context.user_data.get("amount")
-    inr_value = context.user_data.get("inr_value")
-
-    # Check for duplicate hash
-    cur.execute("SELECT id FROM transactions WHERE tx_hash=?", (tx_hash,))
-    if cur.fetchone():
-        await update.message.reply_text(
-            "⚠️ This transaction hash already exists!\n"
-            "Please enter a new valid one."
-        )
-        return HASH
-
-    try:
-        cur.execute(
-            "INSERT INTO transactions (user_id, coin, amount, inr_value, tx_hash, status) "
-            "VALUES (?,?,?,?,?,?)",
-            (user_id, coin, amount, inr_value, tx_hash, "pending"),
-        )
-        conn.commit()
-    except Exception as e:
-        await update.message.reply_text("❌ Error saving transaction. Please try again.")
-        print(f"DB Error: {e}")
-        return HASH
-
+    cur.execute("INSERT INTO transactions (user_id, coin, amount, inr_value, screenshot_id, status, bank_info) VALUES (?,?,?,?,?,?,?)",
+                (user.id, coin, amount, val, s_id, "pending", bank))
+    conn.commit()
     tx_id = cur.lastrowid
 
-    # 🔹 Fetch bank details for admin
-    cur.execute("SELECT bank_account, ifsc, name FROM users WHERE user_id=?", (user_id,))
-    bank = cur.fetchone()
-    bank_info = f"🏦 Bank: {bank[0]}\nIFSC: {bank[1]}\nName: {bank[2]}" if bank else "❌ No bank details found"
+    # ADMIN NOTIFICATION
+    admin_msg = (f"🔔 *New Order #{tx_id}*\n\n👤 User: {user.id}\n💰 {amount} {coin}\n🇮🇳 Payout: ₹{val}\n\n🏦 *Bank Details:*\n{bank}")
+    await context.bot.send_photo(chat_id=ADMIN_ID, photo=s_id, caption=admin_msg, parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ Approve", callback_data=f"approve_{tx_id}"), InlineKeyboardButton("❌ Reject", callback_data=f"reject_{tx_id}")]]))
 
-    keyboard = [
-        [InlineKeyboardButton("✅ Approve", callback_data=f"approve_{tx_id}")],
-        [InlineKeyboardButton("❌ Reject", callback_data=f"reject_{tx_id}")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
-    await context.bot.send_message(
-        ADMIN_ID,
-        f"🔔 New Transaction Request\n\n"
-        f"👤 User: {user_id}\n"
-        f"💰 Coin: {coin}\n"
-        f"🔢 Amount: {amount}\n"
-        f"₹ Value: {inr_value}\n"
-        f"🔗 Hash: {tx_hash}\n\n"
-        f"{bank_info}",
-        reply_markup=reply_markup
-    )
-
-    await update.message.reply_text("✅ Your transaction has been submitted and is pending admin approval.")
+    res_text = "✅ Submitted! Admin verify karke aapko payment bhej dega."
+    if is_q: await update_or_query.edit_message_text(res_text)
+    else: await update_or_query.reply_text(res_text)
     return ConversationHandler.END
 
-# === Admin Commands ===
-async def addcoin(update: Update, context: CallbackContext):
-    if update.message.from_user.id != ADMIN_ID: return
-    try:
-        symbol, price, address = context.args[0], float(context.args[1]), context.args[2]
-        cur.execute("INSERT OR REPLACE INTO coins (symbol, price, address) VALUES (?,?,?)",
-                    (symbol.upper(), price, address))
-        conn.commit()
-        await update.message.reply_text(f"✅ {symbol.upper()} added with rate {price} INR and address {address}")
-    except:
-        await update.message.reply_text("❌ Usage: /addcoin <symbol> <price> <address>")
-
-async def removecoin(update: Update, context: CallbackContext):
-    if update.message.from_user.id != ADMIN_ID: return
-    try:
-        symbol = context.args[0].upper()
-        cur.execute("DELETE FROM coins WHERE symbol=?", (symbol,))
-        conn.commit()
-        await update.message.reply_text(f"❌ Coin {symbol} removed successfully.")
-    except:
-        await update.message.reply_text("❌ Usage: /removecoin <symbol>")
-
-async def setprice(update: Update, context: CallbackContext):
-    if update.message.from_user.id != ADMIN_ID: return
-    try:
-        price = float(context.args[0])
-        cur.execute("INSERT OR REPLACE INTO settings (key,value) VALUES (?,?)", ("global_price", str(price)))
-        conn.commit()
-        await update.message.reply_text(f"✅ Global price set to {price} INR for all coins.")
-    except:
-        await update.message.reply_text("❌ Usage: /setprice <price>")
-
-async def maintenance(update: Update, context: CallbackContext):
-    if update.message.from_user.id != ADMIN_ID: return
-    try:
-        state = context.args[0].lower()
-        if state not in ["on", "off"]:
-            raise Exception
-        cur.execute("INSERT OR REPLACE INTO settings (key,value) VALUES (?,?)", ("maintenance", state))
-        conn.commit()
-        await update.message.reply_text(f"🔧 Maintenance mode {state.upper()}")
-    except:
-        await update.message.reply_text("❌ Usage: /maintenance on|off")
-
-# Admin approve/reject buttons
+# === ADMIN LOGIC ===
 async def button_handler(update: Update, context: CallbackContext):
     query = update.callback_query
     await query.answer()
-    data = query.data
-    if not data: return
-    action, tx_id = data.split("_", 1)
-    tx_id = int(tx_id)
+    if "_" not in query.data: return
+    act, tid = query.data.split("_", 1)
+    
+    status = "approved" if act == "approve" else "rejected"
+    cur.execute(f"UPDATE transactions SET status='{status}' WHERE id=?", (tid,))
+    conn.commit()
+    
+    cur.execute("SELECT user_id FROM transactions WHERE id=?", (tid,))
+    uid = cur.fetchone()[0]
+    
+    await query.edit_message_caption(caption=f"Transaction {tid} {status.upper()}.")
+    await context.bot.send_message(uid, f"{'✅' if act=='approve' else '❌'} Your transaction #{tid} has been {status}.")
 
-    if action == "approve":
-        cur.execute("UPDATE transactions SET status='approved' WHERE id=?", (tx_id,))
-        conn.commit()
-        await query.edit_message_text(f"✅ Transaction {tx_id} approved.")
-
-        cur.execute("SELECT user_id, tx_hash FROM transactions WHERE id=?", (tx_id,))
-        uid, tx_hash = cur.fetchone()
-        await context.bot.send_message(uid, f"✅ Your transaction {tx_hash} has been approved.")
-
-    elif action == "reject":
-        cur.execute("UPDATE transactions SET status='rejected' WHERE id=?", (tx_id,))
-        conn.commit()
-        await query.edit_message_text(f"❌ Transaction {tx_id} rejected.")
-
-        cur.execute("SELECT user_id, tx_hash FROM transactions WHERE id=?", (tx_id,))
-        uid, tx_hash = cur.fetchone()
-        await context.bot.send_message(uid, f"❌ Your transaction {tx_hash} has been rejected, Please Re-check your transaction hash ID you entered.\n⚠️If not working please contact Customer Care @supremehelpline")
-
-# Admin view pending transactions
-async def transactions(update: Update, context: CallbackContext):
-    if update.message.from_user.id != ADMIN_ID: return
-    cur.execute("SELECT id,user_id,coin,amount,inr_value,tx_hash FROM transactions WHERE status='pending'")
-    rows = cur.fetchall()
-    if not rows:
-        await update.message.reply_text("No pending transactions.")
-    else:
-        text = "📋 Pending Transactions:\n"
-        for r in rows:
-            cur.execute("SELECT bank_account,ifsc,name FROM users WHERE user_id=?", (r[1],))
-            bank = cur.fetchone()
-            text += (f"ID:{r[0]} User:{r[1]} {r[3]} {r[2]} (~{r[4]} INR) Hash:{r[5]}\n"
-                     f"🏦 Bank: {bank[0]}, IFSC: {bank[1]}, Name: {bank[2]}\n\n")
-        await update.message.reply_text(text)
-
-# User view history
-async def history(update: Update, context: CallbackContext):
-    user_id = update.message.from_user.id
-    cur.execute("SELECT coin,amount,inr_value,tx_hash,status FROM transactions WHERE user_id=?", (user_id,))
-    rows = cur.fetchall()
-    if not rows:
-        await update.message.reply_text("No transactions found.")
-    else:
-        text = "📜 Your Transaction History:\n"
-        for r in rows:
-            text += f"{r[1]} {r[0]} (~{r[2]} INR) Hash:{r[3]} Status:{r[4]}\n"
-        await update.message.reply_text(text)
-
-# === Main ===
+# === MAIN ===
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
-
     conv = ConversationHandler(
         entry_points=[CommandHandler("sell", sell)],
         states={
             AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_amount)],
             COIN_SELECT: [CallbackQueryHandler(select_coin)],
-            HASH: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_hash)],
+            CONFIRM_SENT: [CallbackQueryHandler(ask_screenshot, pattern="^payment_done$")],
+            SCREENSHOT: [MessageHandler(filters.PHOTO, handle_screenshot)],
+            BANK_CHOICE: [CallbackQueryHandler(bank_choice_handler)],
             BANK_ACC: [MessageHandler(filters.TEXT & ~filters.COMMAND, bank_account)],
             BANK_IFSC: [MessageHandler(filters.TEXT & ~filters.COMMAND, bank_ifsc)],
             BANK_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, bank_name)],
         },
-        fallbacks=[]
+        fallbacks=[CommandHandler("start", start)]
     )
-
     app.add_handler(conv)
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("addcoin", addcoin))
-    app.add_handler(CommandHandler("removecoin", removecoin))
-    app.add_handler(CommandHandler("setprice", setprice))
-    app.add_handler(CommandHandler("maintenance", maintenance))
-    app.add_handler(CommandHandler("transactions", transactions))
-    app.add_handler(CommandHandler("history", history))
     app.add_handler(CallbackQueryHandler(button_handler))
-                    
-    print("🤖 Supreme Exchange Bot Running")
-
+    print("🤖 Supreme Exchange Bot Live!")
     app.run_polling(drop_pending_updates=True)
 
-
-if __name__ == "__main__":
-    main()
+if __name__ == "__main__": main()
     
-
