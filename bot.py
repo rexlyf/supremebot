@@ -12,7 +12,7 @@ from telegram.ext import (
 # === LOGGING ===
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-# === WEB SERVER (Railway 24/7 Hosting ke liye) ===
+# === WEB SERVER ===
 app_web = Flask(__name__)
 @app_web.route('/')
 def home(): return "Supreme Exchange Bot is Live!"
@@ -94,8 +94,7 @@ async def select_coin(update: Update, context: CallbackContext):
         f"💵 *Order Summary*\nSelling: {context.user_data['amount']} {coin}\nReceive: ₹{inr_value}\n\n"
         f"📥 *Address (Tap to copy):*\n<code>{address}</code>\n\n"
         f"✅ Please send the exact amount to the address.\n\n"
-        f"⚠️ Note: Be aware you should ensure that the amount shown after fee deduction is sent, "
-        f"otherwise you may face transaction problems.\n\n"
+        f"⚠️ Note: Be aware you should ensure that the amount shown after fee deduction is sent.\n\n"
         f"After sending click the button below"
     )
     keyboard = [[InlineKeyboardButton(f"✅ I have sent the {coin}", callback_data="payment_done")]]
@@ -114,7 +113,7 @@ async def handle_screenshot(update: Update, context: CallbackContext):
         return SCREENSHOT
 
     context.user_data['screenshot_id'] = update.message.photo[-1].file_id
-    user_id = update.message.from_user.id
+    user_id = update.effective_user.id
 
     cur.execute("SELECT bank_account, ifsc, name FROM users WHERE user_id=?", (user_id,))
     bank = cur.fetchone()
@@ -136,10 +135,10 @@ async def bank_choice_handler(update: Update, context: CallbackContext):
     query = update.callback_query
     await query.answer()
     if query.data == "use_old":
-        cur.execute("SELECT bank_account, ifsc, name FROM users WHERE user_id=?", (query.from_user.id,))
+        cur.execute("SELECT bank_account, ifsc, name FROM users WHERE user_id=?", (update.effective_user.id,))
         bank = cur.fetchone()
         context.user_data['final_bank'] = f"Bank: {bank[0]}\nIFSC: {bank[1]}\nName: {bank[2]}"
-        return await save_transaction(query, context)
+        return await save_transaction(update, context)
     else:
         await query.message.reply_text("🏦 Enter NEW bank account number:")
         return BANK_ACC
@@ -156,7 +155,7 @@ async def bank_ifsc(update: Update, context: CallbackContext):
 
 async def bank_name(update: Update, context: CallbackContext):
     name = update.message.text.strip()
-    user_id = update.message.from_user.id
+    user_id = update.effective_user.id
     acc, ifsc = context.user_data['t_acc'], context.user_data['t_ifsc']
     
     cur.execute("INSERT OR REPLACE INTO users (user_id, bank_account, ifsc, name) VALUES (?,?,?,?)", (user_id, acc, ifsc, name))
@@ -165,9 +164,8 @@ async def bank_name(update: Update, context: CallbackContext):
     context.user_data['final_bank'] = f"Bank: {acc}\nIFSC: {ifsc}\nName: {name}"
     return await save_transaction(update, context)
 
-async def save_transaction(u_or_q, context: CallbackContext):
-    user = u_or_q.from_user
-    is_q = hasattr(u_or_q, 'data')
+async def save_transaction(update: Update, context: CallbackContext):
+    user = update.effective_user
     data = context.user_data
 
     cur.execute("INSERT INTO transactions (user_id, coin, amount, inr_value, screenshot_id, status, bank_info) VALUES (?,?,?,?,?,?,?)",
@@ -175,55 +173,56 @@ async def save_transaction(u_or_q, context: CallbackContext):
     conn.commit()
     tx_id = cur.lastrowid
 
-    # ADMIN NOTIFICATION
     admin_msg = (f"🔔 *New Order #{tx_id}*\n\n👤 User: {user.id}\n💰 {data['amount']} {data['coin']}\n🇮🇳 Payout: ₹{data['inr_value']}\n\n🏦 *Bank Details:*\n{data['final_bank']}")
+    
     await context.bot.send_photo(chat_id=ADMIN_ID, photo=data['screenshot_id'], caption=admin_msg, parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ Approve", callback_data=f"ap_{tx_id}"), InlineKeyboardButton("❌ Reject", callback_data=f"rj_{tx_id}")]]))
 
-    res_text = "✅ Details submitted! Admin verify karke aapko payment bhej dega."
-    if is_q: await u_or_q.edit_message_text(res_text)
-    else: await u_or_q.reply_text(res_text)
+    res_text = "✅ Submitted! Admin verify karke aapko payment bhej dega."
+    if update.callback_query:
+        await update.callback_query.edit_message_text(res_text)
+    else:
+        await update.message.reply_text(res_text)
+        
     return ConversationHandler.END
 
 # === ADMIN COMMANDS ===
 async def addcoin(update, context):
-    if update.message.from_user.id != ADMIN_ID: return
+    if update.effective_user.id != ADMIN_ID: return
     try:
         s, p, a = context.args[0].upper(), float(context.args[1]), context.args[2]
         cur.execute("INSERT OR REPLACE INTO coins VALUES (?,?,?)", (s, p, a))
         conn.commit()
-        await update.message.reply_text(f"✅ {s} Added at {p} INR.\nAddress: {a}")
+        await update.message.reply_text(f"✅ {s} Added.")
     except: await update.message.reply_text("Usage: /addcoin <symbol> <price> <address>")
 
 async def removecoin(update, context):
-    if update.message.from_user.id != ADMIN_ID: return
+    if update.effective_user.id != ADMIN_ID: return
     try:
         s = context.args[0].upper()
         cur.execute("DELETE FROM coins WHERE symbol=?", (s,))
         conn.commit()
         await update.message.reply_text(f"❌ {s} removed.")
-    except: await update.message.reply_text("Usage: /removecoin <symbol>")
+    except: pass
 
 async def setprice(update, context):
-    if update.message.from_user.id != ADMIN_ID: return
+    if update.effective_user.id != ADMIN_ID: return
     try:
-        p = context.args[0]
-        cur.execute("INSERT OR REPLACE INTO settings VALUES (?,?)", ("global_price", p))
+        cur.execute("INSERT OR REPLACE INTO settings VALUES (?,?)", ("global_price", context.args[0]))
         conn.commit()
-        await update.message.reply_text(f"✅ Global Price set to {p} INR.")
-    except: await update.message.reply_text("Usage: /setprice <price>")
+        await update.message.reply_text(f"✅ Price set to {context.args[0]}")
+    except: pass
 
 async def maintenance(update, context):
-    if update.message.from_user.id != ADMIN_ID: return
+    if update.effective_user.id != ADMIN_ID: return
     try:
-        state = context.args[0].lower()
-        cur.execute("INSERT OR REPLACE INTO settings VALUES (?,?)", ("maintenance", state))
+        cur.execute("INSERT OR REPLACE INTO settings VALUES (?,?)", ("maintenance", context.args[0].lower()))
         conn.commit()
-        await update.message.reply_text(f"🔧 Maintenance Mode: {state.upper()}")
-    except: await update.message.reply_text("Usage: /maintenance on|off")
+        await update.message.reply_text(f"🔧 Maintenance: {context.args[0]}")
+    except: pass
 
 async def transactions_list(update, context):
-    if update.message.from_user.id != ADMIN_ID: return
+    if update.effective_user.id != ADMIN_ID: return
     cur.execute("SELECT id, user_id, amount, coin, status FROM transactions WHERE status='pending'")
     rows = cur.fetchall()
     if not rows: await update.message.reply_text("No pending orders.")
@@ -232,34 +231,28 @@ async def transactions_list(update, context):
         await update.message.reply_text(txt)
 
 async def history(update, context):
-    cur.execute("SELECT id, coin, amount, status FROM transactions WHERE user_id=? ORDER BY id DESC LIMIT 5", (update.message.from_user.id,))
+    cur.execute("SELECT id, coin, amount, status FROM transactions WHERE user_id=? ORDER BY id DESC LIMIT 5", (update.effective_user.id,))
     rows = cur.fetchall()
-    if not rows: await update.message.reply_text("No transaction history found.")
+    if not rows: await update.message.reply_text("No history.")
     else:
-        txt = "📜 Your Last 5 Transactions:\n" + "\n".join([f"#{r[0]} {r[2]} {r[1]} - {r[3]}" for r in rows])
+        txt = "📜 Last 5 Transactions:\n" + "\n".join([f"#{r[0]} {r[2]} {r[1]} - {r[3]}" for r in rows])
         await update.message.reply_text(txt)
 
-# === ADMIN ACTION HANDLER (Approve/Reject) ===
-async def button_handler(update, context):
+async def button_handler(update: Update, context: CallbackContext):
     q = update.callback_query
     await q.answer()
     if "_" not in q.data: return
     act, tid = q.data.split("_")
     status = "approved" if act == "ap" else "rejected"
-    
     cur.execute(f"UPDATE transactions SET status='{status}' WHERE id=?", (tid,))
     conn.commit()
-    
     cur.execute("SELECT user_id FROM transactions WHERE id=?", (tid,))
     uid = cur.fetchone()[0]
-    
     await q.edit_message_caption(caption=f"✅ Order #{tid} {status.upper()}.")
     await context.bot.send_message(uid, f"{'✅' if act=='ap' else '❌'} Your transaction #{tid} has been {status}.")
 
-# === MAIN BOT SETUP ===
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
-    
     conv = ConversationHandler(
         entry_points=[CommandHandler("sell", sell)],
         states={
@@ -273,7 +266,6 @@ def main():
             BANK_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, bank_name)],
         }, fallbacks=[CommandHandler("start", start)]
     )
-
     app.add_handler(conv)
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("history", history))
@@ -283,8 +275,6 @@ def main():
     app.add_handler(CommandHandler("maintenance", maintenance))
     app.add_handler(CommandHandler("transactions", transactions_list))
     app.add_handler(CallbackQueryHandler(button_handler))
-    
-    print("🤖 Supreme Exchange Bot Live!")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__": main()
